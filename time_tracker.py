@@ -1,5 +1,7 @@
 import sqlite3
 from datetime import datetime
+import signal
+import sys
 
 
 class TimeTracker:
@@ -21,7 +23,21 @@ class TimeTracker:
                 """
             )
 
+    def check_active_task(self):
+        with self.conn:
+            return self.conn.execute(
+                "SELECT id, chat_link, task_name, start_time FROM tasks WHERE end_time IS NULL"
+            ).fetchone()
+
     def start_task(self, chat_link, task_name):
+        active_task = self.check_active_task()
+        if active_task:
+            print(
+                f"Существует незавершенная задача:\n"
+                f"ID: {active_task[0]}, Задача: {active_task[2]}, Начата: {active_task[3]}"
+            )
+            return
+
         with self.conn:
             self.conn.execute(
                 """
@@ -32,25 +48,25 @@ class TimeTracker:
             )
         print(f"Начата задача '{task_name}' ({chat_link}) в {datetime.now()}.")
 
-    def end_task(self, task_id):
-        with self.conn:
-            task = self.conn.execute(
-                "SELECT task_name, start_time FROM tasks WHERE id = ? AND end_time IS NULL",
-                (task_id,),
-            ).fetchone()
-            if not task:
-                print("Активная задача с указанным ID не найдена.")
-                return
+    def end_task(self):
+        active_task = self.check_active_task()
+        if not active_task:
+            print("Нет активных задач для завершения.")
+            return
 
+        with self.conn:
             self.conn.execute(
                 """
                 UPDATE tasks
                 SET end_time = ?
                 WHERE id = ?
                 """,
-                (datetime.now(), task_id),
+                (datetime.now(), active_task[0]),
             )
-        print(f"Завершена задача '{task[0]}' в {datetime.now()}.")
+        print(
+            f"Задача '{active_task[2]}' завершена в {datetime.now()}. "
+            f"Начата в {active_task[3]}."
+        )
 
     def resume_task(self, task_id):
         with self.conn:
@@ -96,9 +112,28 @@ class TimeTracker:
         self.conn.close()
 
 
+def handle_exit(signal_num, frame):
+    print("\nПрограмма завершена.")
+    tracker.end_task()  # Завершаем незавершенную задачу перед выходом
+    sys.exit(0)
+
+
 def main():
+    global tracker
     tracker = TimeTracker()
+
+    # Обработка сигналов для выхода
+    signal.signal(signal.SIGINT, handle_exit)  # Ctrl+C
+    signal.signal(signal.SIGTERM, handle_exit)  # Закрытие программы
+
     try:
+        active_task = tracker.check_active_task()
+        if active_task:
+            print(
+                f"При запуске обнаружена незавершенная задача:\n"
+                f"ID: {active_task[0]}, Задача: {active_task[2]}, Начата: {active_task[3]}"
+            )
+
         while True:
             print("\nДоступные команды:")
             print("1. Начать задачу")
@@ -114,8 +149,7 @@ def main():
                 task_name = input("Введите название задачи: ")
                 tracker.start_task(chat_link, task_name)
             elif command == "2":
-                task_id = int(input("Введите ID задачи для завершения: "))
-                tracker.end_task(task_id)
+                tracker.end_task()
             elif command == "3":
                 task_id = int(input("Введите ID задачи для продолжения: "))
                 tracker.resume_task(task_id)
@@ -123,9 +157,12 @@ def main():
                 tracker.show_tasks()
             elif command == "5":
                 print("Выход из программы.")
+                tracker.end_task()  # Завершаем задачу перед выходом
                 break
             else:
                 print("Неверная команда. Попробуйте снова.")
+    except KeyboardInterrupt:
+        handle_exit(None, None)
     finally:
         tracker.close()
 
